@@ -1,0 +1,99 @@
+class AddOrderDialog(QDialog):
+    def __init__(self, db, user_id, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.user_id = user_id
+
+        self.setWindowTitle("Добавить заказ")
+        self.setGeometry(300, 300, 600, 400)
+
+        self.layout = QVBoxLayout(self)
+
+        # Выбор пользователя
+        self.user_combobox = QComboBox()
+        users = self.db.fetch_all("SELECT id, username FROM users WHERE role = 'user'")
+        for user_id, username in users:
+            self.user_combobox.addItem(username, user_id)
+        self.layout.addWidget(QLabel("Выберите пользователя:"))
+        self.layout.addWidget(self.user_combobox)
+
+        # Таблица товаров
+        self.products_table = QTableWidget()
+        self.products_table.setColumnCount(2)
+        self.products_table.setHorizontalHeaderLabels(["ID Товара", "Количество"])
+        self.layout.addWidget(QLabel("Добавьте товары:"))
+        self.layout.addWidget(self.products_table)
+
+        # Кнопки подтверждения
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        self.layout.addWidget(self.buttons)
+
+        self.load_products()
+
+    def load_products(self):
+        """
+        Загружаем товары из базы данных и заполняем таблицу.
+        """
+        try:
+            products = self.db.fetch_all("SELECT id, name, quantity FROM products")
+            self.products_table.setRowCount(len(products))
+            for row, (product_id, name, quantity) in enumerate(products):
+                self.products_table.setItem(row, 0, QTableWidgetItem(f"{product_id}: {name}"))
+                self.products_table.setItem(row, 1, QTableWidgetItem("0"))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка загрузки товаров: {e}")
+
+    def accept(self):
+        """
+        Обработка данных перед закрытием диалога.
+        """
+        order_items = []
+        for row in range(self.products_table.rowCount()):
+            product_id_item = self.products_table.item(row, 0)
+            quantity_item = self.products_table.item(row, 1)
+
+            if not product_id_item or not quantity_item:
+                continue
+
+            try:
+                product_id = int(product_id_item.text().split(":")[0])
+                quantity = int(quantity_item.text())
+                if quantity > 0:
+                    order_items.append((product_id, quantity))
+            except ValueError:
+                QMessageBox.warning(self, "Ошибка", "Проверьте правильность ввода количества.")
+                return
+
+        if not order_items:
+            QMessageBox.warning(self, "Ошибка", "Добавьте хотя бы один товар.")
+            return
+
+        try:
+            # Получаем пользователя
+            user_id = self.user_combobox.currentData()
+            if not user_id:
+                QMessageBox.warning(self, "Ошибка", "Выберите пользователя.")
+                return
+
+            # Генерируем номер заказа
+            order_count = self.db.fetch_one("SELECT COUNT(*) FROM orders")[0]
+            order_number = f"ORD-{order_count + 1}"
+
+            # Вставляем заказ
+            self.db.query("INSERT INTO orders (user_id, order_number, status) VALUES (?, ?, ?)",
+                          (user_id, order_number, "pending"))
+            order_id = self.db.fetch_one("SELECT id FROM orders WHERE order_number = ?", (order_number,))[0]
+
+            # Вставляем товары
+            for product_id, quantity in order_items:
+                price = self.db.fetch_one("SELECT price FROM products WHERE id = ?", (product_id,))[0]
+                total_price = price * quantity
+                self.db.query("INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)",
+                              (order_id, product_id, quantity, total_price))
+
+            QMessageBox.information(self, "Успех", "Заказ успешно добавлен.")
+            super().accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Ошибка при добавлении заказа: {e}")
